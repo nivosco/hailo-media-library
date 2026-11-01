@@ -104,11 +104,14 @@ the LPR viewer before the application:
 The viewer receives the video on UDP port 5000 and the metadata from ``tcp://10.0.0.1:7000``, and shows the video
 with the vehicle and plate boxes and a side panel with the recognized plates.
 
+The application sends two video streams: the full-resolution stream to UDP port 5000 and a 1280×720 stream to
+port 5002. To view the smaller stream, add ``-u 5002``.
+
 To record the annotated video, for example for a demonstration, add ``--save-mkv``:
 
 .. code-block:: sh
 
-   python3 lpr_app_viewer.py --save-mkv lpr_demo.mkv
+   python3 lpr_app_viewer.py -u 5002 --save-mkv lpr_demo.mkv
 
 Run with a Live Camera
 ======================
@@ -160,8 +163,10 @@ Option                             Meaning
 =================================  =====================================================================================
 ``-t``, ``--timeout``              Run time in seconds (default 60)
 ``-p``, ``--print-fps``            Print the frame rate of the encoded stream
-``-o``, ``--host-ip``              Destination of the video stream (default ``10.0.0.2``)
-``-u``, ``--udp-port``             Destination UDP port of the video stream (default 5000)
+``-o``, ``--host-ip``              Destination of the video streams (default: the computer connected over SSH,
+                                   otherwise ``10.0.0.2``)
+``-u``, ``--udp-port``             UDP port of the full-resolution stream (default 5000); the 1280×720 stream uses
+                                   this port + 2
 ``-z``, ``--zmq-port``             Port of the metadata publisher (default 7000)
 ``-f``, ``--file``                 Raw NV12 video file to play instead of the camera
 ``-W``, ``-H``, ``--fps``          Width, height and frame rate of the video file (required with ``--file``)

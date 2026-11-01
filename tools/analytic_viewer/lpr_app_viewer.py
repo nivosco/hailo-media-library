@@ -491,6 +491,14 @@ def _draw_filled_slot(ctx, sx: float, sy: float, geom: PanelGeometry, slot: Plat
     layout.set_font_description(font_desc)
     layout.set_text(combined_text, -1)
     _, ext = layout.get_pixel_extents()
+    # On small output resolutions the panel is narrow; shrink the text so it is not clipped.
+    max_text_w = slot_w - 2 * SLOT_PADDING_PX
+    if ext.width > max_text_w:
+        font_desc.set_absolute_size(
+            ocr_font_size * max_text_w / ext.width * Pango.SCALE
+        )
+        layout.set_font_description(font_desc)
+        _, ext = layout.get_pixel_extents()
     text_x = sx + (slot_w - ext.width) / 2
     text_y = sy + (text_h - ext.height) / 2
 
