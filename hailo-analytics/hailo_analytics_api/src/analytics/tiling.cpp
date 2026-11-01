@@ -98,6 +98,8 @@ void tracker_config_t::merge_from(const tracker_config_t &other)
         trace = *other.trace;
     if (other.labels_map)
         labels_map = *other.labels_map;
+    if (other.anchored_labels)
+        anchored_labels = *other.anchored_labels;
     if (other.max_tracklets)
         max_tracklets = *other.max_tracklets;
     if (other.max_missed_frames)
@@ -136,6 +138,8 @@ void tracker_config_t::apply_to(TrackerBuilder &b) const
         b.set_trace_opt(*trace);
     if (labels_map)
         b.set_labels_map(*labels_map);
+    if (anchored_labels)
+        b.set_anchored_labels(*anchored_labels);
     if (max_tracklets)
         b.set_max_tracklets(*max_tracklets);
     if (max_missed_frames)

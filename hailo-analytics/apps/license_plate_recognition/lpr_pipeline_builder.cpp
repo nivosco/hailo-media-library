@@ -28,6 +28,15 @@ namespace lpr = hailo_analytics::analytics::license_plate_recognition;
 // Half the analytics-API default of 100 ms — prioritise latency over batch fill.
 static constexpr std::chrono::milliseconds LPR_SCHEDULER_TIMEOUT{50};
 
+// License plates are too small to track at the detection rate; they take the ID of their vehicle.
+static constexpr const char *LICENSE_PLATE_LABEL = "license_plate";
+static constexpr const char *VEHICLE_LABEL = "vehicle";
+
+// The OCR scheduler timeout bounds how long a partly filled batch waits.
+static constexpr int OCR_BATCH_SIZE = 8;
+// PaddleOCR keeps the text aspect ratio and pads with gray.
+static constexpr dsp_color_t OCR_PAD_COLOR = {.y = 128, .u = 128, .v = 128};
+
 static constexpr std::string_view TRACKING_MODE_FAST = "fast";
 static constexpr std::string_view TRACKING_MODE_SLOW = "slow";
 static constexpr std::string_view TRACKING_MODE_BALANCED = "balanced";
@@ -100,18 +109,27 @@ tiling::tiling_detection_config_t default_tiling_config(TrackingMode mode)
     cfg.tracker_config.max_missed_frames = tracker_params.max_missed_frames;
     cfg.tracker_config.smoothing_alpha = tracker_params.smoothing_alpha;
     cfg.tracker_config.association_threshold = tracker_params.association_threshold;
+    cfg.tracker_config.anchored_labels = std::map<std::string, std::string>{{LICENSE_PLATE_LABEL, VEHICLE_LABEL}};
 
     return cfg;
 }
 
-lpr::bbox_crop_ocr_config_t default_lpr_config()
+lpr::bbox_crop_ocr_config_t default_lpr_config(const OcrOptions &options)
 {
     auto cfg = lpr::base_config();
     ai_models::apply_to(ai_models::PADDLE_OCR, cfg.ocr_config);
+    if (!options.hef_path.empty())
+        cfg.ocr_config.ai_config.hef_path = options.hef_path;
+    cfg.ocr_config.ai_config.batch_size = OCR_BATCH_SIZE;
+    cfg.ocr_config.ai_config.scheduler_threshold = OCR_BATCH_SIZE;
     cfg.bbox_crop_config.input_width = 1920;
     cfg.bbox_crop_config.input_height = 1080;
     cfg.bbox_crop_config.queue_size = 1;
-    cfg.bbox_crop_config.crop_every_x_frames = 2;
+    // Plates exist only on detection frames, so every frame is offered to the crop stage.
+    cfg.bbox_crop_config.crop_every_x_frames = 1;
+    cfg.bbox_crop_config.letterbox_alignment = DSP_LETTERBOX_UP_LEFT;
+    cfg.bbox_crop_config.letterbox_color = OCR_PAD_COLOR;
+    cfg.quality_gate_config.vote_min_count = options.vote_min_count;
     cfg.aggregator_config.main_queue_size = 3;
     cfg.aggregator_config.sub_queue_size = 20;
     cfg.ocr_config.ai_config.queue_size = 20;
@@ -129,9 +147,9 @@ tl::expected<hailo_analytics::pipeline::PipelinePtr, hailo_analytics::pipeline::
 }
 
 tl::expected<hailo_analytics::pipeline::PipelinePtr, hailo_analytics::pipeline::AppStatus> build_ocr_pipeline(
-    const std::string &name, bool use_hailort_service)
+    const std::string &name, bool use_hailort_service, const OcrOptions &options)
 {
-    auto cfg = default_lpr_config();
+    auto cfg = default_lpr_config(options);
     cfg.ocr_config.ai_config.use_hailort_service = use_hailort_service;
     return lpr::generate_bbox_crop_ocr_pipeline(name, cfg);
 }

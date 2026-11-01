@@ -11,6 +11,7 @@ This section includes reference pipelines and applications based on Hailo AI Ana
    apps/single_stream
    apps/detection
    apps/face_landmarks
+   apps/license_plate_recognition
    apps/dual_sensor_case_study
    apps/dual_sensor_face_landmarks
    apps/gst_vision_analytics_encoder

@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <string_view>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,6 +26,9 @@ struct LprDBEntry : public hailo_analytics::pipeline::PipelineDBEntry
     std::string value;
     float confidence{0.0f};
     float detection_confidence{0.0f};
+    std::map<std::string, int> votes; ///< Accepted reads per text (vote mode only)
+    int total_votes{0};
+    bool confirmed{false}; ///< Vote mode: value was read vote_min_count times and is published
 };
 
 namespace cropping_stages = hailo_analytics::pipeline::cropping;
@@ -85,6 +89,8 @@ struct bbox_crop_config_t
     std::optional<hailo_analytics::pipeline::StagePoolMode> pool_mode;
     std::optional<size_t> crop_every_x_frames;
     std::optional<bool> release_input_after_dsp;
+    std::optional<dsp_letterbox_alignment_t> letterbox_alignment; ///< If set, keep aspect ratio (letterbox)
+    std::optional<dsp_color_t> letterbox_color;                   ///< Letterbox padding color
 
     /**
      * @brief Merge configuration from another bbox_crop_config_t.
@@ -120,6 +126,9 @@ struct quality_gate_config_t
     std::optional<bool> require_lp_in_vehicle;       ///< If true, skip license plates not contained within any vehicle
                                                      ///< detection, and keep only the highest-confidence LP per vehicle
                                                      ///< (default: true)
+    std::optional<int> vote_min_count; ///< If set, publish a plate text only after it was read this many times
+                                       ///< for the track (and holds the majority of its reads), then stop OCR
+                                       ///< for that track. Unset: cache the first accepted read (default)
 
     /**
      * @brief Merge configuration from another quality_gate_config_t.

@@ -97,7 +97,11 @@ cxxopts::Options build_arg_parser()
     ("fps", "Playback FPS (used with --file)",
         cxxopts::value<double>()->default_value("30"))
     ("m,tracking-mode", "Tracking mode for LPR: slow, fast, balanced (default: balanced)",
-        cxxopts::value<std::string>()->default_value("balanced"));
+        cxxopts::value<std::string>()->default_value("balanced"))
+    ("ocr-hef", "OCR HEF path (default: the bundled PP-OCRv6-medium HEF)",
+        cxxopts::value<std::string>()->default_value(""))
+    ("vote-count", "Matching OCR reads needed before a plate text is published",
+        cxxopts::value<int>()->default_value(std::to_string(lpr_app::DEFAULT_VOTE_MIN_COUNT)));
     // clang-format on
 
     options.add_options()(apps::utils::USE_MEDIALIB_SERVICE_OPTION,
@@ -188,6 +192,7 @@ struct AppResources
     int height = 0;
     double fps = 30.0;
     lpr_app::TrackingMode tracking_mode = lpr_app::TrackingMode::BALANCED;
+    lpr_app::OcrOptions ocr_options;
     std::vector<std::string> temp_config_files;
 };
 
@@ -401,7 +406,8 @@ void create_pipeline(std::shared_ptr<AppResources> app_resources)
     }
     hailo_analytics::pipeline::PipelinePtr tiling_pipeline = tiling_pipeline_status.value();
 
-    auto ocr_pipeline_status = lpr_app::build_ocr_pipeline(OCR_PIPELINE, app_resources->use_medialib_service);
+    auto ocr_pipeline_status =
+        lpr_app::build_ocr_pipeline(OCR_PIPELINE, app_resources->use_medialib_service, app_resources->ocr_options);
     if (!ocr_pipeline_status.has_value())
     {
         HAILO_ANALYTICS_LOG_ERROR("Failed to create OCR pipeline");
@@ -521,6 +527,13 @@ int main(int argc, char *argv[])
     }
 
     app_resources->use_medialib_service = result[apps::utils::USE_MEDIALIB_SERVICE_OPTION].as<bool>();
+    app_resources->ocr_options.hef_path = result["ocr-hef"].as<std::string>();
+    app_resources->ocr_options.vote_min_count = result["vote-count"].as<int>();
+    if (app_resources->ocr_options.vote_min_count < 1)
+    {
+        std::cerr << "Error: --vote-count must be at least 1" << std::endl;
+        return 1;
+    }
 
     if (app_resources->use_medialib_service && !app_resources->file_path.empty())
     {

@@ -24,12 +24,32 @@
 namespace hailo_analytics::pipeline::ai
 {
 
+// An owner track is snapped to the raw detection it overlaps most, if at least this much.
+static constexpr float OWNER_SNAP_MIN_IOU = 0.1f;
+
+static float bbox_iou(const HailoBBox &a, const HailoBBox &b)
+{
+    const float inter_w = std::min(a.xmax(), b.xmax()) - std::max(a.xmin(), b.xmin());
+    const float inter_h = std::min(a.ymax(), b.ymax()) - std::max(a.ymin(), b.ymin());
+    if (inter_w <= 0.0f || inter_h <= 0.0f)
+        return 0.0f;
+    const float inter = inter_w * inter_h;
+    return inter / (a.width() * a.height() + b.width() * b.height() - inter);
+}
+
+static bool bbox_contains(const HailoBBox &box, float x, float y)
+{
+    return x >= box.xmin() && x <= box.xmax() && y >= box.ymin() && y <= box.ymax();
+}
+
 DetectionTrackerStage::DetectionTrackerStage(std::string name, hailo_tracker_config_t config,
                                              std::map<uint8_t, std::string> labels_map, size_t queue_size, bool leaky,
-                                             bool trace_processing_operations, std::string mot_output_path)
+                                             bool trace_processing_operations, std::string mot_output_path,
+                                             std::map<std::string, std::string> anchored_labels)
     : hailo_analytics::pipeline::ThreadedStage(name, queue_size, leaky, trace_processing_operations),
       m_tracker_handle(nullptr), m_tracker_config(config), m_labels_map(std::move(labels_map)),
-      m_save_mot_output(!mot_output_path.empty()), m_mot_output_path(std::move(mot_output_path)), m_frame_counter(0)
+      m_anchored_labels(std::move(anchored_labels)), m_save_mot_output(!mot_output_path.empty()),
+      m_mot_output_path(std::move(mot_output_path)), m_frame_counter(0)
 {
     HAILO_ANALYTICS_LOG_INFO("DetectionTrackerStage created with name: {}, queue size: {}, leaky: {}", name, queue_size,
                              leaky);
@@ -179,15 +199,77 @@ AppStatus DetectionTrackerStage::predict_tracklets(hailo_tracklets_t &tracklets)
     return AppStatus::SUCCESS;
 }
 
-AppStatus DetectionTrackerStage::update_tracker_from_roi_detections(HailoROIPtr hailo_roi)
+bool DetectionTrackerStage::is_anchored(const HailoDetectionPtr &detection) const
 {
-    auto hailo_detections = hailo_common::get_hailo_detections(hailo_roi);
-    for (const auto &det : hailo_detections)
+    return m_anchored_labels.count(detection->get_label()) > 0;
+}
+
+void DetectionTrackerStage::snap_owners_to_raw_boxes(const std::vector<HailoDetectionPtr> &raw_detections,
+                                                     std::vector<HailoDetectionPtr> &tracked) const
+{
+    for (const auto &track : tracked)
+    {
+        HailoDetectionPtr best_raw;
+        float best_iou = OWNER_SNAP_MIN_IOU;
+        for (const auto &raw : raw_detections)
+        {
+            if (is_anchored(raw) || raw->get_class_id() != track->get_class_id())
+                continue;
+            float iou = bbox_iou(track->get_bbox(), raw->get_bbox());
+            if (iou > best_iou)
+            {
+                best_iou = iou;
+                best_raw = raw;
+            }
+        }
+        if (best_raw)
+            track->set_bbox(best_raw->get_bbox());
+    }
+}
+
+std::vector<HailoDetectionPtr> DetectionTrackerStage::anchor_to_owners(
+    const std::vector<HailoDetectionPtr> &raw_detections, std::vector<HailoDetectionPtr> &tracked) const
+{
+    // Owner boxes are pre-update predictions; snap each one to its raw detection on this frame.
+    snap_owners_to_raw_boxes(raw_detections, tracked);
+
+    std::vector<HailoDetectionPtr> anchored;
+    for (const auto &raw : raw_detections)
+    {
+        if (!is_anchored(raw))
+            continue;
+        const std::string &owner_label = m_anchored_labels.at(raw->get_label());
+        const HailoBBox box = raw->get_bbox();
+        const float center_x = box.xmin() + box.width() / 2.0f;
+        const float center_y = box.ymin() + box.height() / 2.0f;
+        for (const auto &owner : tracked)
+        {
+            if (owner->get_label() != owner_label || !bbox_contains(owner->get_bbox(), center_x, center_y))
+                continue;
+            auto owner_ids = hailo_common::get_hailo_track_id(owner);
+            if (owner_ids.empty())
+                break;
+            raw->add_object(std::make_shared<HailoUniqueID>(owner_ids[0]->get_id(), TRACKING_ID));
+            anchored.push_back(raw);
+            break;
+        }
+    }
+    return anchored;
+}
+
+AppStatus DetectionTrackerStage::update_tracker_from_roi_detections(HailoROIPtr hailo_roi,
+                                                                    std::vector<HailoDetectionPtr> &raw_detections)
+{
+    raw_detections = hailo_common::get_hailo_detections(hailo_roi);
+    std::vector<HailoDetectionPtr> to_track;
+    for (const auto &det : raw_detections)
     {
         hailo_roi->remove_object(det);
+        if (!is_anchored(det))
+            to_track.push_back(det);
     }
 
-    auto detection_buffer = hailo_detections_to_hailort_detections(hailo_detections);
+    auto detection_buffer = hailo_detections_to_hailort_detections(to_track);
     auto *tracker_detections = reinterpret_cast<hailo_detections_t *>(detection_buffer.data());
 
     hailopp_status status = hailo_tracker_update(m_tracker_handle, tracker_detections);
@@ -211,9 +293,10 @@ AppStatus DetectionTrackerStage::process(BufferPtr data)
     }
 
     bool ai_processed = !data->get_metadata_of_type(MetadataType::TENSOR).empty();
+    std::vector<HailoDetectionPtr> raw_detections;
     if (ai_processed)
     {
-        AppStatus update_status = update_tracker_from_roi_detections(hailo_roi);
+        AppStatus update_status = update_tracker_from_roi_detections(hailo_roi, raw_detections);
         if (AppStatus::SUCCESS != update_status)
         {
             return update_status;
@@ -221,6 +304,11 @@ AppStatus DetectionTrackerStage::process(BufferPtr data)
     }
 
     auto online_detection_ptrs = tracklets_to_hailo_detections(tracklets);
+    if (!m_anchored_labels.empty() && ai_processed)
+    {
+        auto anchored = anchor_to_owners(raw_detections, online_detection_ptrs);
+        online_detection_ptrs.insert(online_detection_ptrs.end(), anchored.begin(), anchored.end());
+    }
     hailo_common::add_detection_pointers(hailo_roi, online_detection_ptrs);
 
     m_frame_counter++;
@@ -345,6 +433,13 @@ DetectionTrackerStageBuild::Builder &DetectionTrackerStageBuild::Builder::set_la
     return *this;
 }
 
+DetectionTrackerStageBuild::Builder &DetectionTrackerStageBuild::Builder::set_anchored_labels(
+    std::map<std::string, std::string> anchored_labels)
+{
+    m_anchored_labels = std::move(anchored_labels);
+    return *this;
+}
+
 DetectionTrackerStageBuild::Builder &DetectionTrackerStageBuild::Builder::set_mot_output_path(std::string path)
 {
     m_mot_output_path = std::move(path);
@@ -356,7 +451,7 @@ std::shared_ptr<DetectionTrackerStage> DetectionTrackerStageBuild::Builder::buil
     THROW_IF_MISSING(m_stage_name.has_value(), "set_stage_name");
 
     return std::make_shared<DetectionTrackerStage>(m_stage_name.value(), m_tracker_config, m_labels_map, m_queue_size,
-                                                   m_leaky, m_trace, m_mot_output_path);
+                                                   m_leaky, m_trace, m_mot_output_path, m_anchored_labels);
 }
 
 DetectionTrackerStageBuild::Builder DetectionTrackerStageBuild::create()

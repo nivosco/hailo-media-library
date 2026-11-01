@@ -143,9 +143,9 @@ inline constexpr model_bundle_t LINKNET_DPM_128 = {
     .post_config_relative = "",
 };
 
-/// PaddleOCR v5 mobile recognition used by the LPR app for plate text decode.
+/// PaddleOCR v6 medium recognition used by the LPR app for plate text decode.
 inline constexpr model_bundle_t PADDLE_OCR = {
-    .hef_relative = "license_plate_recognition/resources/paddle_ocr_v5_mobile_recognition.hef",
+    .hef_relative = "license_plate_recognition/resources/paddle_ocr_v6_medium_recognition.hef",
     .post_so_relative = "",
     .post_function_name = "",
     .post_config_relative = "",

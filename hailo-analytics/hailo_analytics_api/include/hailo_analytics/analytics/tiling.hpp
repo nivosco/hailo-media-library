@@ -50,6 +50,9 @@ struct tracker_config_t
     std::optional<bool> leaky;
     std::optional<bool> trace;
     std::optional<std::map<uint8_t, std::string>> labels_map;
+    /// Labels that are not tracked themselves but take the tracking ID of the owner detection that
+    /// contains them, e.g. {"license_plate": "vehicle"}. Empty or unset: every label is tracked.
+    std::optional<std::map<std::string, std::string>> anchored_labels;
 
     // hailo_tracker_config_t parameter overrides
     std::optional<uint16_t> max_tracklets;

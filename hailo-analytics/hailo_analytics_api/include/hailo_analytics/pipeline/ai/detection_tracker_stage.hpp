@@ -50,8 +50,14 @@ class DetectionTrackerStage : public hailo_analytics::pipeline::ThreadedStage
     hailo_tracker m_tracker_handle;
     hailo_tracker_config_t m_tracker_config;
     std::map<uint8_t, std::string> m_labels_map;
+    std::map<std::string, std::string> m_anchored_labels; // anchored label -> owner label
 
     void write_mot_line(const std::vector<HailoDetectionPtr> &detections);
+    bool is_anchored(const HailoDetectionPtr &detection) const;
+    std::vector<HailoDetectionPtr> anchor_to_owners(const std::vector<HailoDetectionPtr> &raw_detections,
+                                                    std::vector<HailoDetectionPtr> &tracked) const;
+    void snap_owners_to_raw_boxes(const std::vector<HailoDetectionPtr> &raw_detections,
+                                  std::vector<HailoDetectionPtr> &tracked) const;
 
   protected:
     // MOT Challenge output
@@ -64,7 +70,7 @@ class DetectionTrackerStage : public hailo_analytics::pipeline::ThreadedStage
         const std::vector<HailoDetectionPtr> &detections);
     std::vector<HailoDetectionPtr> tracklets_to_hailo_detections(const hailo_tracklets_t &tracklets) const;
 
-    AppStatus update_tracker_from_roi_detections(HailoROIPtr hailo_roi);
+    AppStatus update_tracker_from_roi_detections(HailoROIPtr hailo_roi, std::vector<HailoDetectionPtr> &raw_detections);
     AppStatus predict_tracklets(hailo_tracklets_t &tracklets);
 
   public:
@@ -77,10 +83,14 @@ class DetectionTrackerStage : public hailo_analytics::pipeline::ThreadedStage
      * @param leaky Whether the queue drops old frames when full
      * @param trace_processing_operations Enable performance tracing
      * @param mot_output_path Path to write MOT Challenge CSV output (empty = disabled). Should be used for debug only.
+     * @param anchored_labels Labels that inherit the tracking ID of the owner detection containing them
+     *        (anchored label -> owner label). Anchored detections are not tracked; on AI frames the raw
+     *        detection is output with the owner's ID, and owner boxes are snapped to their raw detection.
      */
     DetectionTrackerStage(std::string name, hailo_tracker_config_t config, std::map<uint8_t, std::string> labels_map,
                           size_t queue_size = DETECTION_TRACKER_QUEUE_SIZE_DEFAULT, bool leaky = false,
-                          bool trace_processing_operations = true, std::string mot_output_path = "");
+                          bool trace_processing_operations = true, std::string mot_output_path = "",
+                          std::map<std::string, std::string> anchored_labels = {});
 
     ~DetectionTrackerStage() override;
 
@@ -108,6 +118,7 @@ class DetectionTrackerStageBuild : public DetectionTrackerStage
             return cfg;
         }();
         std::map<uint8_t, std::string> m_labels_map;
+        std::map<std::string, std::string> m_anchored_labels;
         std::string m_mot_output_path;
 
       public:
@@ -131,6 +142,7 @@ class DetectionTrackerStageBuild : public DetectionTrackerStage
         Builder &set_smoothing_alpha(float smoothing_alpha);
 
         Builder &set_labels_map(std::map<uint8_t, std::string> labels_map);
+        Builder &set_anchored_labels(std::map<std::string, std::string> anchored_labels);
 
         /**
          * @brief Set MOT Challenge CSV output path. Empty string (the default) disables output.

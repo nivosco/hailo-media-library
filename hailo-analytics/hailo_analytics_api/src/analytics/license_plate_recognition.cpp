@@ -6,6 +6,9 @@
 #include <bits/std_abs.h>
 #include <hailo_postprocess_tools/objects/hailo_objects.hpp>
 #include <tl/expected.hpp>
+#include <cctype>
+#include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <chrono>
@@ -34,6 +37,7 @@ static constexpr float DEFAULT_MIN_PIXEL_RATIO = 0.1f;
 static constexpr float DEFAULT_MAX_ASPECT_RATIO_DEVIATION = 0.8f;
 static constexpr bool DEFAULT_REQUIRE_LP_IN_VEHICLE = true;
 static constexpr std::string_view OCR_CLASSIFICATION_TYPE = "ocr";
+static constexpr float VOTE_MIN_SHARE = 0.5f;
 
 namespace
 {
@@ -108,12 +112,14 @@ bool should_skip_bad_aspect_ratio(const HailoDetectionPtr &detection, int input_
  *
  * Looks up the detection's tracking ID in the database. If a cached result exists and the
  * current detection confidence is not significantly better, applies the cached classification
- * and returns true to skip re-running OCR.
+ * and returns true to skip re-running OCR. In vote mode, only a confirmed text is reused, and it
+ * is never re-read.
  *
  * @return true if the detection should be skipped (cached result applied)
  */
 bool should_skip_already_classified(const HailoDetectionPtr &detection,
-                                    const hailo_analytics::pipeline::PipelineDatabasePtr &database, float re_ocr_margin)
+                                    const hailo_analytics::pipeline::PipelineDatabasePtr &database, float re_ocr_margin,
+                                    bool vote_mode)
 {
     auto unique_ids = hailo_common::get_hailo_unique_id(detection);
     if (unique_ids.empty())
@@ -131,9 +137,11 @@ bool should_skip_already_classified(const HailoDetectionPtr &detection,
         return false;
     }
 
+    if (vote_mode && !entry->confirmed)
+        return false;
+
     // If detection confidence is significantly higher than cached, re-run OCR
-    float current_detection_confidence = detection->get_confidence();
-    if (current_detection_confidence > entry->detection_confidence + re_ocr_margin)
+    if (!vote_mode && detection->get_confidence() > entry->detection_confidence + re_ocr_margin)
         return false;
 
     // Confidence is not significantly better — use cached result, skip OCR
@@ -256,6 +264,7 @@ void quality_gate_callback(hailo_analytics::pipeline::BufferPtr data,
     float re_ocr_margin = gate_cfg.re_ocr_confidence_margin.value();
     float min_pixel_ratio = gate_cfg.min_pixel_ratio.value();
     float max_aspect_ratio_deviation = gate_cfg.max_aspect_ratio_deviation.value();
+    bool vote_mode = gate_cfg.vote_min_count.has_value();
 
     auto detections = hailo_common::get_hailo_detections(roi);
     std::vector<HailoDetectionPtr> skipped;
@@ -296,7 +305,7 @@ void quality_gate_callback(hailo_analytics::pipeline::BufferPtr data,
         }
 
         // Third check: already classified via tracking cache
-        if (should_skip_already_classified(detection, database, re_ocr_margin))
+        if (should_skip_already_classified(detection, database, re_ocr_margin, vote_mode))
         {
             skipped.push_back(detection);
             continue;
@@ -312,8 +321,63 @@ void quality_gate_callback(hailo_analytics::pipeline::BufferPtr data,
     }
 }
 
+/**
+ * @brief Upper-case ASCII letters and digits only, so separators do not split the vote.
+ */
+std::string normalize_plate_text(const std::string &text)
+{
+    std::string normalized;
+    for (unsigned char c : text)
+    {
+        if (c < 0x80 && std::isalnum(c))
+            normalized += static_cast<char>(std::toupper(c));
+    }
+    return normalized;
+}
+
+std::shared_ptr<LprDBEntry> get_or_create_entry(const hailo_analytics::pipeline::PipelineDatabasePtr &database,
+                                                int tracking_id)
+{
+    auto entry = std::dynamic_pointer_cast<LprDBEntry>(database->get(tracking_id));
+    return entry ? entry : std::make_shared<LprDBEntry>();
+}
+
+/**
+ * @brief Vote mode: count the read for its track and publish only a confirmed text.
+ *
+ * A text is confirmed once it has been read @p vote_min_count times and holds at least half
+ * of the track's accepted reads. Until then the classification is removed so nothing is published.
+ */
+void commit_vote(const HailoDetectionPtr &detection, const HailoClassificationPtr &read, int tracking_id,
+                 const hailo_analytics::pipeline::PipelineDatabasePtr &database, int vote_min_count)
+{
+    detection->remove_object(read);
+    std::string text = normalize_plate_text(read->get_label());
+    if (text.empty())
+        return;
+
+    auto entry = get_or_create_entry(database, tracking_id);
+    int count = ++entry->votes[text];
+    ++entry->total_votes;
+    if (!entry->confirmed && count >= vote_min_count &&
+        static_cast<float>(count) >= VOTE_MIN_SHARE * static_cast<float>(entry->total_votes))
+    {
+        entry->confirmed = true;
+        entry->value = text;
+        entry->confidence = read->get_confidence();
+        entry->detection_confidence = detection->get_confidence();
+    }
+    database->put(tracking_id, entry);
+
+    if (entry->confirmed)
+    {
+        detection->add_object(std::make_shared<HailoClassification>(std::string(OCR_CLASSIFICATION_TYPE), entry->value,
+                                                                    entry->confidence));
+    }
+}
+
 void commit_callback(hailo_analytics::pipeline::BufferPtr data, hailo_analytics::pipeline::PipelineDatabasePtr database,
-                     float ocr_confidence_threshold)
+                     float ocr_confidence_threshold, std::optional<int> vote_min_count)
 {
     auto roi = data->get_roi();
     if (!roi)
@@ -338,6 +402,12 @@ void commit_callback(hailo_analytics::pipeline::BufferPtr data, hailo_analytics:
         if (best->get_confidence() < ocr_confidence_threshold)
         {
             detection->remove_object(best);
+            continue;
+        }
+
+        if (vote_min_count)
+        {
+            commit_vote(detection, best, tracking_id, database, *vote_min_count);
             continue;
         }
 
@@ -403,6 +473,10 @@ void bbox_crop_config_t::merge_from(const bbox_crop_config_t &other)
         crop_every_x_frames = *other.crop_every_x_frames;
     if (other.release_input_after_dsp)
         release_input_after_dsp = *other.release_input_after_dsp;
+    if (other.letterbox_alignment)
+        letterbox_alignment = *other.letterbox_alignment;
+    if (other.letterbox_color)
+        letterbox_color = *other.letterbox_color;
 }
 
 void bbox_crop_config_t::apply_to(cropping_stages::BBoxCropStageBuild::Builder &b) const
@@ -437,6 +511,8 @@ void bbox_crop_config_t::apply_to(cropping_stages::BBoxCropStageBuild::Builder &
         b.set_crop_every_x_frames(*crop_every_x_frames);
     if (release_input_after_dsp)
         b.set_release_input_after_dsp(*release_input_after_dsp);
+    if (letterbox_alignment)
+        b.set_letterbox_opt(*letterbox_alignment, letterbox_color.value_or(cropping_stages::DEFAULT_LETTERBOX_COLOR));
 }
 
 // ============================================================================
@@ -459,6 +535,8 @@ void quality_gate_config_t::merge_from(const quality_gate_config_t &other)
         max_aspect_ratio_deviation = *other.max_aspect_ratio_deviation;
     if (other.require_lp_in_vehicle)
         require_lp_in_vehicle = *other.require_lp_in_vehicle;
+    if (other.vote_min_count)
+        vote_min_count = *other.vote_min_count;
 }
 
 void bbox_crop_ocr_config_t::merge_from(const bbox_crop_ocr_config_t &other)
@@ -619,6 +697,7 @@ generate_bbox_crop_ocr_pipeline(const std::string &pipeline_name, std::optional<
     auto database = std::make_shared<hailo_analytics::pipeline::PipelineDatabase>(
         std::chrono::seconds(cfg.quality_gate_config.ttl_seconds.value()), cfg.quality_gate_config.max_entries.value());
     const float ocr_confidence_threshold = cfg.quality_gate_config.ocr_confidence_threshold.value();
+    const std::optional<int> vote_min_count = cfg.quality_gate_config.vote_min_count;
 
     // Build quality gate callback stage
     auto quality_gate_stage = routing::CallbackStageBuild::create()
@@ -639,9 +718,10 @@ generate_bbox_crop_ocr_pipeline(const std::string &pipeline_name, std::optional<
                             .set_trace_opt(true)
                             .buildptr();
 
-    commit_stage->set_callback([database, ocr_confidence_threshold](hailo_analytics::pipeline::BufferPtr data) {
-        commit_callback(data, database, ocr_confidence_threshold);
-    });
+    commit_stage->set_callback(
+        [database, ocr_confidence_threshold, vote_min_count](hailo_analytics::pipeline::BufferPtr data) {
+            commit_callback(data, database, ocr_confidence_threshold, vote_min_count);
+        });
 
     // Create bbox crop stage
     auto bbox_crop_builder = cropping_stages::BBoxCropStageBuild::create();
