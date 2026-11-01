@@ -116,6 +116,17 @@ To record the annotated video, for example for a demonstration, add ``--save-mkv
 Run with a Live Camera
 ======================
 
+On a newly flashed board, select the configuration for the platform and the sensor once. The script detects the
+Hailo-15H or Hailo-15L and the connected sensor, and points ``/etc/imaging/cfg/medialib_configs`` to the matching
+configuration. Without this step, ``lpr_app`` stops with ``Configuration architecture ... does not match current
+architecture``.
+
+.. code-block:: sh
+
+   ssh root@10.0.0.1 setup_hailo_sensor.sh
+
+Then run the application:
+
 .. code-block:: sh
 
    ssh root@10.0.0.1
