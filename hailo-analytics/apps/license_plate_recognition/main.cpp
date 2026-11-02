@@ -101,7 +101,9 @@ cxxopts::Options build_arg_parser()
     ("ocr-hef", "OCR HEF path (default: the bundled PP-OCRv6-medium HEF)",
         cxxopts::value<std::string>()->default_value(""))
     ("vote-count", "Matching OCR reads needed before a plate text is published",
-        cxxopts::value<int>()->default_value(std::to_string(lpr_app::DEFAULT_VOTE_MIN_COUNT)));
+        cxxopts::value<int>()->default_value(std::to_string(lpr_app::DEFAULT_VOTE_MIN_COUNT)))
+    ("detector", "Vehicle and license-plate detector: s (YOLOv8s, default) or n (YOLOv8n)",
+        cxxopts::value<std::string>()->default_value("s"));
     // clang-format on
 
     options.add_options()(apps::utils::USE_MEDIALIB_SERVICE_OPTION,
@@ -193,6 +195,7 @@ struct AppResources
     double fps = 30.0;
     lpr_app::TrackingMode tracking_mode = lpr_app::TrackingMode::BALANCED;
     lpr_app::OcrOptions ocr_options;
+    lpr_app::DetectorModel detector = lpr_app::DetectorModel::YOLOV8S;
     std::vector<std::string> temp_config_files;
 };
 
@@ -397,8 +400,8 @@ void create_pipeline(std::shared_ptr<AppResources> app_resources)
     }
 
     // AI Pipeline Stages
-    auto tiling_pipeline_status = lpr_app::build_tiling_pipeline(TILING_PIPELINE, app_resources->tracking_mode,
-                                                                 app_resources->use_medialib_service);
+    auto tiling_pipeline_status = lpr_app::build_tiling_pipeline(
+        TILING_PIPELINE, app_resources->tracking_mode, app_resources->use_medialib_service, app_resources->detector);
     if (!tiling_pipeline_status.has_value())
     {
         HAILO_ANALYTICS_LOG_ERROR("Failed to create tiling pipeline");
@@ -529,6 +532,15 @@ int main(int argc, char *argv[])
     app_resources->use_medialib_service = result[apps::utils::USE_MEDIALIB_SERVICE_OPTION].as<bool>();
     app_resources->ocr_options.hef_path = result["ocr-hef"].as<std::string>();
     app_resources->ocr_options.vote_min_count = result["vote-count"].as<int>();
+    try
+    {
+        app_resources->detector = lpr_app::detector_model_from_string(result["detector"].as<std::string>());
+    }
+    catch (const std::invalid_argument &err)
+    {
+        std::cerr << "Error: " << err.what() << std::endl;
+        return 1;
+    }
     if (app_resources->ocr_options.vote_min_count < 1)
     {
         std::cerr << "Error: --vote-count must be at least 1" << std::endl;

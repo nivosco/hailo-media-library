@@ -40,6 +40,8 @@ static constexpr dsp_color_t OCR_PAD_COLOR = {.y = 128, .u = 128, .v = 128};
 static constexpr std::string_view TRACKING_MODE_FAST = "fast";
 static constexpr std::string_view TRACKING_MODE_SLOW = "slow";
 static constexpr std::string_view TRACKING_MODE_BALANCED = "balanced";
+static constexpr std::string_view DETECTOR_YOLOV8N = "n";
+static constexpr std::string_view DETECTOR_YOLOV8S = "s";
 
 struct TrackerConfig
 {
@@ -88,10 +90,25 @@ TrackingMode tracking_mode_from_string(const std::string &mode_str)
                                 std::string(TRACKING_MODE_FAST) + ", or " + std::string(TRACKING_MODE_BALANCED));
 }
 
-tiling::tiling_detection_config_t default_tiling_config(TrackingMode mode)
+DetectorModel detector_model_from_string(const std::string &model_str)
+{
+    if (model_str == DETECTOR_YOLOV8N)
+    {
+        return DetectorModel::YOLOV8N;
+    }
+    if (model_str == DETECTOR_YOLOV8S)
+    {
+        return DetectorModel::YOLOV8S;
+    }
+    throw std::invalid_argument("Invalid detector: '" + model_str + "'. Expected: " + std::string(DETECTOR_YOLOV8N) +
+                                " or " + std::string(DETECTOR_YOLOV8S));
+}
+
+tiling::tiling_detection_config_t default_tiling_config(TrackingMode mode, DetectorModel detector)
 {
     auto cfg = tiling::base_config();
-    ai_models::apply_to(ai_models::YOLOV8N, cfg.detection_config);
+    ai_models::apply_to(detector == DetectorModel::YOLOV8S ? ai_models::YOLOV8S : ai_models::YOLOV8N,
+                        cfg.detection_config);
     cfg.tiling_config.queue_size = 1;
     cfg.aggregator_config.main_queue_size = 3;
 
@@ -139,9 +156,9 @@ lpr::bbox_crop_ocr_config_t default_lpr_config(const OcrOptions &options)
 }
 
 tl::expected<hailo_analytics::pipeline::PipelinePtr, hailo_analytics::pipeline::AppStatus> build_tiling_pipeline(
-    const std::string &name, TrackingMode mode, bool use_hailort_service)
+    const std::string &name, TrackingMode mode, bool use_hailort_service, DetectorModel detector)
 {
-    auto cfg = default_tiling_config(mode);
+    auto cfg = default_tiling_config(mode, detector);
     cfg.detection_config.ai_config.use_hailort_service = use_hailort_service;
     return tiling::generate_tiling_detection_pipeline(name, cfg);
 }

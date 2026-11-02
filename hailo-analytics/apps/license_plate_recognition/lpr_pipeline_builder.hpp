@@ -20,6 +20,15 @@ enum class TrackingMode
 
 TrackingMode tracking_mode_from_string(const std::string &mode_str);
 
+/// Vehicle and license-plate detector: YOLOv8s (default) detects small plates more reliably; YOLOv8n is lighter.
+enum class DetectorModel
+{
+    YOLOV8N,
+    YOLOV8S
+};
+
+DetectorModel detector_model_from_string(const std::string &model_str);
+
 inline constexpr int DEFAULT_VOTE_MIN_COUNT = 3;
 
 /**
@@ -32,7 +41,7 @@ struct OcrOptions
 };
 
 hailo_analytics::analytics::tiling::tiling_detection_config_t default_tiling_config(
-    TrackingMode mode = TrackingMode::BALANCED);
+    TrackingMode mode = TrackingMode::BALANCED, DetectorModel detector = DetectorModel::YOLOV8S);
 
 hailo_analytics::analytics::license_plate_recognition::bbox_crop_ocr_config_t default_lpr_config(
     const OcrOptions &options = {});
@@ -41,7 +50,8 @@ hailo_analytics::analytics::license_plate_recognition::bbox_crop_ocr_config_t de
 // VDevice. It must be set whenever media_library_service owns the media library, so that the two
 // processes share the NN core instead of contending for it.
 tl::expected<hailo_analytics::pipeline::PipelinePtr, hailo_analytics::pipeline::AppStatus> build_tiling_pipeline(
-    const std::string &name, TrackingMode mode = TrackingMode::BALANCED, bool use_hailort_service = false);
+    const std::string &name, TrackingMode mode = TrackingMode::BALANCED, bool use_hailort_service = false,
+    DetectorModel detector = DetectorModel::YOLOV8S);
 
 tl::expected<hailo_analytics::pipeline::PipelinePtr, hailo_analytics::pipeline::AppStatus> build_ocr_pipeline(
     const std::string &name, bool use_hailort_service = false, const OcrOptions &options = {});

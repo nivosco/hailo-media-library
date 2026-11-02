@@ -21,7 +21,7 @@ Each frame goes through these stages (the block that runs each stage is in brack
 1. **ISP and multi-resize** [ISP, DSP]: the frame is resized to the encoded output streams and to a 1920×1080
    analytics stream.
 2. **Tiling and detection** [DSP, NN core]: on every second frame, five tiles (the full frame and four overlapping
-   quarters) are resized to 640×384, and YOLOv8n detects vehicles and license plates in them.
+   quarters) are resized to 640×384, and YOLOv8s detects vehicles and license plates in them.
 3. **Vehicle tracking and plate association** [CPU]: vehicles are tracked across frames. Plates are too small to
    track on their own; each plate takes the tracking ID of the vehicle that contains its center.
 4. **Quality gate** [CPU]: only the best plate inside each vehicle, large enough and with a plate-like aspect ratio,
@@ -81,8 +81,8 @@ Models
 
 The application uses two models:
 
-* **Detector**: ``hailo_yolov8n_384_640.hef``, included in the board image under
-  ``/home/root/apps/shared/resources/``.
+* **Detector**: ``hailo_yolov8s_384_640.hef`` (or the lighter ``hailo_yolov8n_384_640.hef`` with
+  ``--detector n``), both included in the board image under ``/home/root/apps/shared/resources/``.
 * **OCR**: ``paddle_ocr_v6_medium_recognition.hef``, PP-OCRv6-medium quantized for license plates. It is not part
   of the 1.13.0 release and is provided separately. Copy it to the board:
 
@@ -182,6 +182,7 @@ Option                             Meaning
 ``-f``, ``--file``                 Raw NV12 video file to play instead of the camera
 ``-W``, ``-H``, ``--fps``          Width, height and frame rate of the video file (required with ``--file``)
 ``-m``, ``--tracking-mode``        Vehicle tracker: ``slow``, ``balanced`` (default) or ``fast``
+``--detector``                     Detector: ``s`` (YOLOv8s, default) or ``n`` (YOLOv8n, lighter)
 ``--vote-count``                   Matching OCR reads needed before a plate text is published (default 3)
 ``--ocr-hef``                      OCR HEF to use instead of the bundled PP-OCRv6-medium HEF
 ``-c``, ``--config-file-path``     Media Library configuration file
@@ -204,6 +205,8 @@ Customization
 
 * ``--vote-count``: fewer reads publish more plates, sooner, but also more wrong texts; more reads do the opposite.
 * ``--tracking-mode``: ``fast`` drops lost vehicles sooner; ``slow`` keeps them longer through occlusions.
+* ``--detector n``: the lighter YOLOv8n detector leaves more NN-core time for other models, at the cost of missing
+  more small plates.
 * The OCR reads any text and does not know plate formats. For a known regional format, accuracy can be raised by
   correcting look-alike characters by position (for example forcing digits where the format has digits).
 * The detection, quality-gate, crop and OCR settings are set in ``lpr_pipeline_builder.cpp``.
